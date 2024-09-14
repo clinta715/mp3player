@@ -1,32 +1,81 @@
 import sys
 import os
 import json
+import numpy as np
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QVBoxLayout, QHBoxLayout, 
                              QWidget, QPushButton, QListWidget, QFileDialog, 
                              QSlider, QLabel, QStyle)
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QIcon
-from pygame import mixer
 from mutagen.mp3 import MP3
+import pygame
+import pyaudio
+import struct
+from matplotlib.figure import Figure
+from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
+
+CHUNK = 1024  # We'll keep this as a base chunk size
+FORMAT = pyaudio.paInt16
+CHANNELS = 1
+RATE = 44100
+
+class SpectrumAnalyzer(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.figure = Figure(figsize=(5, 2), dpi=100)
+        self.canvas = FigureCanvas(self.figure)
+        layout = QVBoxLayout()
+        layout.addWidget(self.canvas)
+        self.setLayout(layout)
+        self.ax = self.figure.add_subplot(111)
+        self.line, = self.ax.plot([], [])
+        self.ax.set_ylim(0, 100)
+        self.ax.set_xlim(0, CHUNK)
+        self.ax.set_title('Audio Spectrum')
+        self.ax.set_xlabel('Frequency')
+        self.ax.set_ylabel('Amplitude (dB)')
+
+    def update_plot(self, data):
+        self.line.set_data(range(len(data)), data)
+        self.ax.set_xlim(0, len(data))
+        self.canvas.draw()
 
 class MP3Player(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Enhanced MP3 Player")
-        self.setGeometry(100, 100, 500, 400)
+        self.setWindowTitle("Enhanced MP3 Player with Spectrum Analyzer")
+        self.setGeometry(100, 100, 800, 600)
 
         self.config = self.load_config()
         self.songs = []
         self.current_song = None
         self.current_index = -1
+        self.is_playing = False
+        self.current_song_length = 0
+        self.last_known_position = 0
+
+        # Initialize pygame mixer
+        pygame.mixer.init()
 
         self.init_ui()
         self.load_songs()
 
-        mixer.init()
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.update_position)
         self.timer.start(1000)  # Update every second
+
+        # Initialize PyAudio
+        self.p = pyaudio.PyAudio()
+        self.stream = self.p.open(format=FORMAT,
+                                  channels=CHANNELS,
+                                  rate=RATE,
+                                  input=True,
+                                  frames_per_buffer=CHUNK)
+
+        # Set up spectrum analyzer update timer
+        self.spectrum_timer = QTimer(self)
+        self.spectrum_timer.timeout.connect(self.update_spectrum)
+        self.spectrum_timer.start(50)  # Update every 50ms
 
     def init_ui(self):
         central_widget = QWidget()
@@ -39,9 +88,14 @@ class MP3Player(QMainWindow):
         self.song_list.itemDoubleClicked.connect(self.play_selected_song)
         layout.addWidget(self.song_list)
 
+        # Spectrum Analyzer
+        self.spectrum_analyzer = SpectrumAnalyzer()
+        layout.addWidget(self.spectrum_analyzer)
+
         # Playback position slider
         self.position_slider = QSlider(Qt.Orientation.Horizontal)
-        self.position_slider.sliderMoved.connect(self.set_position)
+        self.position_slider.setRange(0, 100)
+        self.position_slider.sliderReleased.connect(self.seek_position)
         layout.addWidget(self.position_slider)
 
         # Time labels
@@ -66,11 +120,6 @@ class MP3Player(QMainWindow):
         self.play_button.clicked.connect(self.play_pause)
         control_layout.addWidget(self.play_button)
 
-        self.stop_button = QPushButton()
-        self.stop_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaStop))
-        self.stop_button.clicked.connect(self.stop)
-        control_layout.addWidget(self.stop_button)
-
         self.next_button = QPushButton()
         self.next_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaSkipForward))
         self.next_button.clicked.connect(self.next_song)
@@ -78,26 +127,39 @@ class MP3Player(QMainWindow):
 
         layout.addLayout(control_layout)
 
-        # Volume control
-        volume_layout = QHBoxLayout()
-        self.volume_slider = QSlider(Qt.Orientation.Horizontal)
-        self.volume_slider.setRange(0, 100)
-        self.volume_slider.setValue(50)
-        self.volume_slider.valueChanged.connect(self.set_volume)
-        
-        self.volume_label = QLabel("50%")
-        volume_layout.addWidget(QLabel("Volume:"))
-        volume_layout.addWidget(self.volume_slider)
-        volume_layout.addWidget(self.volume_label)
-        
-        layout.addLayout(volume_layout)
-
         # Folder selection button
         self.select_folder_button = QPushButton("Select Folder")
         self.select_folder_button.clicked.connect(self.select_folder)
         layout.addWidget(self.select_folder_button)
 
         central_widget.setLayout(layout)
+
+    def update_spectrum(self):
+        if pygame.mixer.music.get_busy():
+            try:
+                data = self.stream.read(CHUNK, exception_on_overflow=False)
+                actual_chunk_size = len(data) // 2  # Each sample is 2 bytes
+                data_int = struct.unpack(f'{actual_chunk_size}h', data)
+                data_np = np.array(data_int, dtype='h')
+                
+                # Perform FFT and get the magnitude spectrum
+                fft_data = np.fft.fft(data_np)
+                magnitude_spectrum = np.abs(fft_data[:actual_chunk_size // 2])
+                
+                # Convert to decibels
+                magnitude_spectrum = 20 * np.log10(magnitude_spectrum + 1e-10)
+                
+                # Normalize
+                magnitude_spectrum = np.clip(magnitude_spectrum, 0, 100)
+                
+                self.spectrum_analyzer.update_plot(magnitude_spectrum)
+                
+                print(f"Processed chunk size: {actual_chunk_size}")
+            except struct.error as e:
+                print(f"Struct error: {e}")
+                print(f"Received data length: {len(data)} bytes")
+            except Exception as e:
+                print(f"Error updating spectrum: {e}")
 
     def load_config(self):
         try:
@@ -123,27 +185,77 @@ class MP3Player(QMainWindow):
         self.play_song()
 
     def play_pause(self):
-        if not mixer.music.get_busy():
+        if not self.is_playing:
             if self.current_song:
-                mixer.music.unpause()
+                self.play_song(resume=True)
             elif self.songs:
                 self.current_index = 0
                 self.play_song()
         else:
             mixer.music.pause()
+            self.is_playing = False
         self.update_play_button()
 
-    def play_song(self):
+    def play_song(self, resume=False):
         if 0 <= self.current_index < len(self.songs):
             self.current_song = os.path.join(self.config["folder"], self.songs[self.current_index])
-            mixer.music.load(self.current_song)
-            mixer.music.play()
+            try:
+                if not resume:
+                    pygame.mixer.music.load(self.current_song)
+                    self.current_song_length = MP3(self.current_song).info.length
+                    self.last_known_position = 0
+                pygame.mixer.music.play(start=self.last_known_position)
+                self.is_playing = True
+                self.update_play_button()
+                self.update_song_info()
+                print(f"Playing song from position: {self.last_known_position:.2f} seconds")
+            except Exception as e:
+                print(f"Error playing song: {e}")
+                self.is_playing = False
+
+    def seek_position(self):
+        if self.current_song and self.current_song_length > 0:
+            percentage = self.position_slider.value()
+            new_position = (percentage / 100) * self.current_song_length
+            
+            print(f"Seeking to position: {new_position:.2f} seconds")
+            
+            # Stop the current playback
+            pygame.mixer.music.stop()
+            
+            # Start playing from the new position
+            pygame.mixer.music.play(start=new_position)
+            self.last_known_position = new_position
+            self.is_playing = True
             self.update_play_button()
-            self.update_song_info()
 
     def update_play_button(self):
-        icon = QStyle.StandardPixmap.SP_MediaPause if mixer.music.get_busy() else QStyle.StandardPixmap.SP_MediaPlay
+        icon = QStyle.StandardPixmap.SP_MediaPause if self.is_playing else QStyle.StandardPixmap.SP_MediaPlay
         self.play_button.setIcon(self.style().standardIcon(icon))
+
+    def update_position(self):
+        if self.current_song and self.is_playing:
+            try:
+                current_time = pygame.mixer.music.get_pos() / 1000  # get_pos() returns milliseconds
+                if current_time < 0:  # get_pos() returns -1 if the music has stopped
+                    self.is_playing = False
+                    self.update_play_button()
+                    return
+                
+                current_time += self.last_known_position
+                percentage = (current_time / self.current_song_length) * 100
+                self.position_slider.setValue(int(percentage))
+                self.current_time_label.setText(self.format_time(current_time))
+                self.total_time_label.setText(self.format_time(self.current_song_length))
+                print(f"Current position: {current_time:.2f} seconds, Percentage: {percentage:.2f}%")
+            except Exception as e:
+                print(f"Error updating position: {e}")
+
+    def update_song_info(self):
+        if self.current_song:
+            self.current_song_length = MP3(self.current_song).info.length
+            self.total_time_label.setText(self.format_time(self.current_song_length))
+            print(f"Song length: {self.current_song_length:.2f} seconds")
 
     def stop(self):
         mixer.music.stop()
@@ -163,24 +275,22 @@ class MP3Player(QMainWindow):
         mixer.music.set_volume(value / 100)
         self.volume_label.setText(f"{value}%")
 
-    def set_position(self, position):
-        if self.current_song:
-            duration = MP3(self.current_song).info.length
-            mixer.music.set_pos(position * duration / 1000)
+    def set_position_after_start(self, new_pos):
+        try:
+            mixer.music.set_pos(new_pos)
+        except Exception as e:
+            print(f"Error setting position after start: {e}")
 
-    def update_position(self):
-        if self.current_song and mixer.music.get_busy():
-            current_time = mixer.music.get_pos() / 1000
-            total_time = MP3(self.current_song).info.length
-            self.position_slider.setValue(int(current_time * 1000 / total_time))
-            self.current_time_label.setText(self.format_time(current_time))
-            self.total_time_label.setText(self.format_time(total_time))
-
-    def update_song_info(self):
-        if self.current_song:
-            duration = MP3(self.current_song).info.length
-            self.position_slider.setRange(0, int(duration * 1000))
-            self.total_time_label.setText(self.format_time(duration))
+    def apply_queued_seek(self):
+        if self.queued_seek_position is not None and self.is_playing:
+            try:
+                duration = MP3(self.current_song).info.length
+                new_pos = self.queued_seek_position * duration / 1000
+                mixer.music.set_pos(new_pos)
+                print(f"Seeking to position: {new_pos:.2f} seconds")
+            except Exception as e:
+                print(f"Error setting position: {e}")
+            self.queued_seek_position = None
 
     def format_time(self, seconds):
         minutes, seconds = divmod(int(seconds), 60)
