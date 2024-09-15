@@ -8,13 +8,14 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QVBoxLayout, QHBoxLayout
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QIcon
 from mutagen.mp3 import MP3
+from mutagen.id3 import ID3
 import pygame
 import pyaudio
 import struct
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 
-CHUNK = 1024  # We'll keep this as a base chunk size
+CHUNK = 1024
 FORMAT = pyaudio.paInt16
 CHANNELS = 1
 RATE = 44100
@@ -54,7 +55,6 @@ class MP3Player(QMainWindow):
         self.current_song_length = 0
         self.last_known_position = 0
 
-        # Initialize pygame mixer
         pygame.mixer.init()
 
         self.init_ui()
@@ -62,9 +62,8 @@ class MP3Player(QMainWindow):
 
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.update_position)
-        self.timer.start(1000)  # Update every second
+        self.timer.start(1000)
 
-        # Initialize PyAudio
         self.p = pyaudio.PyAudio()
         self.stream = self.p.open(format=FORMAT,
                                   channels=CHANNELS,
@@ -72,10 +71,18 @@ class MP3Player(QMainWindow):
                                   input=True,
                                   frames_per_buffer=CHUNK)
 
-        # Set up spectrum analyzer update timer
         self.spectrum_timer = QTimer(self)
         self.spectrum_timer.timeout.connect(self.update_spectrum)
-        self.spectrum_timer.start(50)  # Update every 50ms
+        self.spectrum_timer.start(50)
+
+        # Set up event to check for song end
+        SONG_END = pygame.USEREVENT + 1
+        pygame.mixer.music.set_endevent(SONG_END)
+
+        # Timer to check for song end
+        self.end_timer = QTimer(self)
+        self.end_timer.timeout.connect(self.check_song_end)
+        self.end_timer.start(500)  # Check every 500ms
 
     def init_ui(self):
         central_widget = QWidget()
@@ -177,8 +184,30 @@ class MP3Player(QMainWindow):
         self.song_list.clear()
         for file in os.listdir(self.config["folder"]):
             if file.endswith(".mp3"):
-                self.songs.append(file)
-                self.song_list.addItem(file)
+                full_path = os.path.join(self.config["folder"], file)
+                try:
+                    audio = MP3(full_path, ID3=ID3)
+                    title = audio.get('TIT2', file)
+                    track_num = audio.get('TRCK', (0,))
+                    if isinstance(track_num, tuple):
+                        track_num = track_num[0]
+                    self.songs.append({
+                        'filename': file,
+                        'title': str(title),
+                        'track': int(str(track_num).split('/')[0]) if track_num else 0
+                    })
+                except:
+                    self.songs.append({
+                        'filename': file,
+                        'title': file,
+                        'track': 0
+                    })
+        
+        # Sort songs based on track number or filename
+        self.songs.sort(key=lambda x: (x['track'], x['filename']))
+        
+        for song in self.songs:
+            self.song_list.addItem(song['title'])
 
     def play_selected_song(self, item):
         self.current_index = self.song_list.row(item)
@@ -192,13 +221,13 @@ class MP3Player(QMainWindow):
                 self.current_index = 0
                 self.play_song()
         else:
-            mixer.music.pause()
+            pygame.mixer.music.pause()
             self.is_playing = False
         self.update_play_button()
 
     def play_song(self, resume=False):
         if 0 <= self.current_index < len(self.songs):
-            self.current_song = os.path.join(self.config["folder"], self.songs[self.current_index])
+            self.current_song = os.path.join(self.config["folder"], self.songs[self.current_index]['filename'])
             try:
                 if not resume:
                     pygame.mixer.music.load(self.current_song)
@@ -212,6 +241,10 @@ class MP3Player(QMainWindow):
             except Exception as e:
                 print(f"Error playing song: {e}")
                 self.is_playing = False
+
+    def check_song_end(self):
+        if self.is_playing and not pygame.mixer.music.get_busy():
+          self.next_song()
 
     def seek_position(self):
         if self.current_song and self.current_song_length > 0:
@@ -258,7 +291,7 @@ class MP3Player(QMainWindow):
             print(f"Song length: {self.current_song_length:.2f} seconds")
 
     def stop(self):
-        mixer.music.stop()
+        pygame.mixer.music.stop()
         self.update_play_button()
 
     def next_song(self):
@@ -272,12 +305,12 @@ class MP3Player(QMainWindow):
             self.play_song()
 
     def set_volume(self, value):
-        mixer.music.set_volume(value / 100)
+        pygame.mixer.music.set_volume(value / 100)
         self.volume_label.setText(f"{value}%")
 
     def set_position_after_start(self, new_pos):
         try:
-            mixer.music.set_pos(new_pos)
+            pygame.mixer.music.set_pos(new_pos)
         except Exception as e:
             print(f"Error setting position after start: {e}")
 
@@ -286,7 +319,7 @@ class MP3Player(QMainWindow):
             try:
                 duration = MP3(self.current_song).info.length
                 new_pos = self.queued_seek_position * duration / 1000
-                mixer.music.set_pos(new_pos)
+                pygame.mixer.music.set_pos(new_pos)
                 print(f"Seeking to position: {new_pos:.2f} seconds")
             except Exception as e:
                 print(f"Error setting position: {e}")
