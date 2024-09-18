@@ -243,6 +243,11 @@ class MP3Player(QMainWindow):
         self.next_button.clicked.connect(self.next_song)
         control_layout.addWidget(self.next_button)
 
+        # Shuffle Button
+        self.shuffle_button = QPushButton("Shuffle")
+        self.shuffle_button.clicked.connect(self.shuffle_playlist)
+        control_layout.addWidget(self.shuffle_button)
+
         self.metadata_button = QPushButton("Show Metadata")
         self.metadata_button.clicked.connect(self.toggle_metadata_window)
         control_layout.addWidget(self.metadata_button)
@@ -265,6 +270,12 @@ class MP3Player(QMainWindow):
         layout.addWidget(self.select_folder_button)
 
         central_widget.setLayout(layout)
+
+    def shuffle_playlist(self):
+        random.shuffle(self.songs)
+        self.song_list.clear()
+        for song in self.songs:
+            self.song_list.addItem(song['title'])
 
     def play_song(self, resume=False):
         if 0 <= self.current_index < len(self.songs):
