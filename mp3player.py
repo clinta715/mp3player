@@ -63,6 +63,8 @@ class SpectrumAnalyzer(QWidget):
         self.ax.set_xlim(0, len(data))
         self.canvas.draw()
 
+import random  # Import for shuffling the playlist
+
 class MP3Player(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -80,7 +82,7 @@ class MP3Player(QMainWindow):
         pygame.mixer.init()
 
         self.init_ui()
-        self.load_songs()  # Load songs and display them in song_list
+        self.load_songs()
 
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.update_position)
@@ -121,6 +123,22 @@ class MP3Player(QMainWindow):
         self.spectrum_analyzer = SpectrumAnalyzer()
         layout.addWidget(self.spectrum_analyzer)
 
+        # Create a horizontal layout for the toggle and shuffle buttons
+        button_layout = QHBoxLayout()
+
+        # Add the toggle button for spectrum analyzer
+        self.toggle_spectrum_button = QPushButton("Hide Spectrum Analyzer")
+        self.toggle_spectrum_button.clicked.connect(self.toggle_spectrum_analyzer)
+        button_layout.addWidget(self.toggle_spectrum_button)
+
+        # Add the shuffle playlist button
+        self.shuffle_button = QPushButton("Shuffle Playlist")
+        self.shuffle_button.clicked.connect(self.shuffle_playlist)
+        button_layout.addWidget(self.shuffle_button)
+
+        # Add the button layout to the main layout
+        layout.addLayout(button_layout)
+
         # Playback position slider
         self.position_slider = QSlider(Qt.Orientation.Horizontal)
         self.position_slider.setRange(0, 100)
@@ -138,7 +156,7 @@ class MP3Player(QMainWindow):
 
         # Playback control buttons
         control_layout = QHBoxLayout()
-
+        
         self.previous_button = QPushButton()
         self.previous_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaSkipBackward))
         self.previous_button.clicked.connect(self.previous_song)
@@ -162,6 +180,23 @@ class MP3Player(QMainWindow):
         layout.addWidget(self.select_folder_button)
 
         central_widget.setLayout(layout)
+
+    def toggle_spectrum_analyzer(self):
+        """Toggle the visibility of the spectrum analyzer."""
+        if self.spectrum_analyzer.isVisible():
+            self.spectrum_analyzer.setVisible(False)
+            self.toggle_spectrum_button.setText("Show Spectrum Analyzer")
+        else:
+            self.spectrum_analyzer.setVisible(True)
+            self.toggle_spectrum_button.setText("Hide Spectrum Analyzer")
+
+    def shuffle_playlist(self):
+        """Shuffle the playlist and update the song list display."""
+        random.shuffle(self.songs)  # Shuffle the songs list
+        self.song_list.clear()  # Clear the current list display
+        for song in self.songs:
+            display_text = f"{song['track']:02d} - {song['title']} - {song['filename']}"
+            self.song_list.addItem(display_text)  # Add the shuffled songs to the display
 
     def update_spectrum(self):
         if pygame.mixer.music.get_busy():
