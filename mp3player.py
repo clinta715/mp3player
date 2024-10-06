@@ -123,7 +123,22 @@ class MP3Player(QMainWindow):
         self.song_table = QTableWidget()
         self.song_table.setColumnCount(4)
         self.song_table.setHorizontalHeaderLabels(['Track', 'Title', 'Filename', 'Path'])
-        self.song_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        
+        # Set resize modes for each column
+        header = self.song_table.horizontalHeader()
+        
+        # Track column: Fixed width based on content
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        
+        # Title column: Stretch to fill available space
+        header.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        
+        # Filename column: Fixed width based on content
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        
+        # Path column: Fixed width based on content (though hidden)
+        header.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+        
         self.song_table.horizontalHeader().setSortIndicatorShown(True)
         self.song_table.horizontalHeader().sectionClicked.connect(self.sort_table)
         self.song_table.itemDoubleClicked.connect(self.play_selected_song)
@@ -131,6 +146,10 @@ class MP3Player(QMainWindow):
         self.song_table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
         self.song_table.clicked.connect(self.on_cell_clicked)
         self.song_table.verticalHeader().setVisible(False)
+        
+        # Hide the path column
+        self.song_table.setColumnHidden(3, True)
+        
         layout.addWidget(self.song_table)
 
         # Spectrum Analyzer
