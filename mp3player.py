@@ -19,6 +19,7 @@ import struct
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 import os
+from PyQt6.QtWidgets import (QTableWidget, QTableWidgetItem, QHeaderView)
 
 CHUNK = 1024
 FORMAT = pyaudio.paInt16
@@ -67,6 +68,7 @@ import random  # Import for shuffling the playlist
 
 class MP3Player(QMainWindow):
     def __init__(self):
+        # Keep existing initialization code...
         super().__init__()
         self.setWindowTitle("MP3 Player")
         self.setGeometry(100, 100, 800, 600)
@@ -78,6 +80,10 @@ class MP3Player(QMainWindow):
         self.is_playing = False
         self.current_song_length = 0
         self.last_known_position = 0
+        
+        # Add sorting tracking
+        self.current_sort_column = 0
+        self.current_sort_order = Qt.SortOrder.AscendingOrder
 
         pygame.mixer.init()
 
@@ -111,13 +117,21 @@ class MP3Player(QMainWindow):
     def init_ui(self):
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
-
         layout = QVBoxLayout()
 
-        # Song list
-        self.song_list = QListWidget()
-        self.song_list.itemDoubleClicked.connect(self.play_selected_song)
-        layout.addWidget(self.song_list)
+        # Replace song list with table
+        self.song_table = QTableWidget()
+        self.song_table.setColumnCount(4)
+        self.song_table.setHorizontalHeaderLabels(['Track', 'Title', 'Filename', 'Path'])
+        self.song_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        self.song_table.horizontalHeader().setSortIndicatorShown(True)
+        self.song_table.horizontalHeader().sectionClicked.connect(self.sort_table)
+        self.song_table.itemDoubleClicked.connect(self.play_selected_song)
+        self.song_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.song_table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
+        self.song_table.clicked.connect(self.on_cell_clicked)
+        self.song_table.verticalHeader().setVisible(False)
+        layout.addWidget(self.song_table)
 
         # Spectrum Analyzer
         self.spectrum_analyzer = SpectrumAnalyzer()
@@ -191,12 +205,37 @@ class MP3Player(QMainWindow):
             self.toggle_spectrum_button.setText("Hide Spectrum Analyzer")
 
     def shuffle_playlist(self):
-        """Shuffle the playlist and update the song list display."""
-        random.shuffle(self.songs)  # Shuffle the songs list
-        self.song_list.clear()  # Clear the current list display
-        for song in self.songs:
-            display_text = f"{song['track']:02d} - {song['title']} - {song['filename']}"
-            self.song_list.addItem(display_text)  # Add the shuffled songs to the display
+        if self.song_table.rowCount() == 0:
+            return
+            
+        # Remember current playing track path
+        current_path = self.get_current_track_path()
+        
+        # Get all rows data
+        rows_data = []
+        for row in range(self.song_table.rowCount()):
+            row_data = []
+            for col in range(self.song_table.columnCount()):
+                item = self.song_table.item(row, col)
+                row_data.append(item.text() if item else "")
+            rows_data.append(row_data)
+        
+        # Shuffle the rows
+        random.shuffle(rows_data)
+        
+        # Clear and repopulate table
+        self.song_table.setRowCount(0)
+        for row_data in rows_data:
+            row = self.song_table.rowCount()
+            self.song_table.insertRow(row)
+            for col, text in enumerate(row_data):
+                self.song_table.setItem(row, col, QTableWidgetItem(text))
+        
+        # Update current track index to match new order
+        if current_path:
+            self.current_index = self.find_track_index(current_path)
+            if self.current_index != -1:
+                self.song_table.selectRow(self.current_index)
 
     def update_spectrum(self):
         if pygame.mixer.music.get_busy():
@@ -238,28 +277,26 @@ class MP3Player(QMainWindow):
 
     def load_songs(self):
         self.songs = []
-        self.song_list.clear()
+        self.song_table.setRowCount(0)
 
-        # Supported formats and their associated Mutagen classes
         supported_formats = {
             '.mp3': MP3,
             '.flac': FLAC,
             '.aac': AAC,
             '.m4a': AAC,
-            '.ogg': OggFileType,  # Handles Ogg Vorbis and Opus
-            '.opus': OggFileType,  # Also handles Opus as an Ogg subtype
+            '.ogg': OggFileType,
+            '.opus': OggFileType,
             '.aiff': AIFF,
         }
 
-        # Walk through the folder and all its subfolders
         for root, dirs, files in os.walk(self.config["folder"]):
             for file in files:
-                ext = os.path.splitext(file)[1].lower()  # Extract the file extension
-                if ext in supported_formats:  # Check if the extension is supported
+                ext = os.path.splitext(file)[1].lower()
+                if ext in supported_formats:
                     full_path = os.path.join(root, file)
                     try:
-                        audio = supported_formats[ext](full_path)  # Use the correct Mutagen class
-                        title = audio.get('TIT2', file)  # Get title or fallback to filename
+                        audio = supported_formats[ext](full_path)
+                        title = audio.get('TIT2', file)
                         track_num = audio.get('TRCK', (0,))
                         if isinstance(track_num, tuple):
                             track_num = track_num[0]
@@ -267,7 +304,8 @@ class MP3Player(QMainWindow):
                         song_data = {
                             'filename': file,
                             'title': str(title),
-                            'track': track
+                            'track': track,
+                            'path': full_path  # Store full path
                         }
                         self.songs.append(song_data)
                     except Exception as e:
@@ -275,16 +313,41 @@ class MP3Player(QMainWindow):
                         self.songs.append({
                             'filename': file,
                             'title': file,
-                            'track': 0
+                            'track': 0,
+                            'path': full_path
                         })
 
-        # Sort songs based on track number or filename
+        # Sort songs and populate table
         self.songs.sort(key=lambda x: (x['track'], x['filename']))
+        self.update_table_display()
 
-        # Display songs with track number, title, and filename in song_list
+
+    def update_table_display(self):
+        self.song_table.setRowCount(0)
         for song in self.songs:
-            display_text = f"{song['track']:02d} - {song['title']} - {song['filename']}"
-            self.song_list.addItem(display_text)
+            row = self.song_table.rowCount()
+            self.song_table.insertRow(row)
+            self.song_table.setItem(row, 0, QTableWidgetItem(f"{song['track']:02d}"))
+            self.song_table.setItem(row, 1, QTableWidgetItem(song['title']))
+            self.song_table.setItem(row, 2, QTableWidgetItem(song['filename']))
+            self.song_table.setItem(row, 3, QTableWidgetItem(song['path']))
+        
+        # Hide the path column as it's just for internal use
+        self.song_table.setColumnHidden(3, True)
+        
+    def sort_table(self, column):
+        if self.current_sort_column == column:
+            self.current_sort_order = Qt.SortOrder.DescendingOrder if self.current_sort_order == Qt.SortOrder.AscendingOrder else Qt.SortOrder.AscendingOrder
+        else:
+            self.current_sort_column = column
+            self.current_sort_order = Qt.SortOrder.AscendingOrder
+        
+        self.song_table.sortItems(column, self.current_sort_order)
+        
+        # Update current track index to match new order if a song is playing
+        if self.current_index != -1:
+            current_path = self.get_current_track_path()
+            self.current_index = self.find_track_index(current_path)
             
     def play_selected_song(self, item):
         self.current_index = self.song_list.row(item)
@@ -302,9 +365,27 @@ class MP3Player(QMainWindow):
             self.is_playing = False
         self.update_play_button()
 
+    def get_current_track_path(self):
+        if self.current_index != -1:
+            return self.song_table.item(self.current_index, 3).text()
+        return None
+
+    def find_track_index(self, path):
+        for row in range(self.song_table.rowCount()):
+            if self.song_table.item(row, 3).text() == path:
+                return row
+        return -1
+
+    def on_cell_clicked(self, index):
+        self.song_table.selectRow(index.row())
+
+    def play_selected_song(self, item):
+        self.current_index = item.row()
+        self.play_song()
+        
     def play_song(self, resume=False):
-        if 0 <= self.current_index < len(self.songs):
-            self.current_song = os.path.join(self.config["folder"], self.songs[self.current_index]['filename'])
+        if 0 <= self.current_index < self.song_table.rowCount():
+            self.current_song = self.song_table.item(self.current_index, 3).text()  # Get path from table
             try:
                 if not resume:
                     pygame.mixer.music.load(self.current_song)
@@ -314,7 +395,9 @@ class MP3Player(QMainWindow):
                 self.is_playing = True
                 self.update_play_button()
                 self.update_song_info()
-                print(f"Playing song from position: {self.last_known_position:.2f} seconds")
+                # Ensure the current song is visible and selected in the table
+                self.song_table.selectRow(self.current_index)
+                self.song_table.scrollToItem(self.song_table.item(self.current_index, 0))
             except Exception as e:
                 print(f"Error playing song: {e}")
                 self.is_playing = False
