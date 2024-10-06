@@ -20,11 +20,36 @@ from matplotlib.figure import Figure
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 import os
 from PyQt6.QtWidgets import (QTableWidget, QTableWidgetItem, QHeaderView)
+from PyQt6.QtGui import QDragEnterEvent, QDropEvent
+import random  # Import for shuffling the playlist
 
 CHUNK = 1024
 FORMAT = pyaudio.paInt16
 CHANNELS = 1
 RATE = 44100
+
+class DragDropTable(QTableWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setAcceptDrops(True)
+        self.player = parent  # Store reference to player for accessing methods
+
+    def dragEnterEvent(self, event: QDragEnterEvent):
+        if event.mimeData().hasUrls():
+            event.accept()
+        else:
+            event.ignore()
+
+    def dragMoveEvent(self, event):
+        if event.mimeData().hasUrls():
+            event.accept()
+        else:
+            event.ignore()
+
+    def dropEvent(self, event: QDropEvent):
+        files = [url.toLocalFile() for url in event.mimeData().urls()]
+        self.player.add_files_to_playlist(files)
+        event.accept()
 
 class SpectrumAnalyzer(QWidget):
     def __init__(self, parent=None):
@@ -64,11 +89,18 @@ class SpectrumAnalyzer(QWidget):
         self.ax.set_xlim(0, len(data))
         self.canvas.draw()
 
-import random  # Import for shuffling the playlist
-
 class MP3Player(QMainWindow):
     def __init__(self):
         # Keep existing initialization code...
+        self.supported_formats = {
+            '.mp3': MP3,
+            '.flac': FLAC,
+            '.aac': AAC,
+            '.m4a': AAC,
+            '.ogg': OggFileType,
+            '.opus': OggFileType,
+            '.aiff': AIFF,
+        }
         super().__init__()
         self.setWindowTitle("MP3 Player")
         self.setGeometry(100, 100, 800, 600)
@@ -119,26 +151,18 @@ class MP3Player(QMainWindow):
         self.setCentralWidget(central_widget)
         layout = QVBoxLayout()
 
-        # Replace song list with table
-        self.song_table = QTableWidget()
+        # Replace QTableWidget with DragDropTable
+        self.song_table = DragDropTable(self)  # Pass self as parent
         self.song_table.setColumnCount(4)
         self.song_table.setHorizontalHeaderLabels(['Track', 'Title', 'Filename', 'Path'])
-        
+
         # Set resize modes for each column
         header = self.song_table.horizontalHeader()
-        
-        # Track column: Fixed width based on content
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
-        
-        # Title column: Stretch to fill available space
-        header.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
-        
-        # Filename column: Fixed width based on content
-        header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
-        
-        # Path column: Fixed width based on content (though hidden)
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
-        
+
         self.song_table.horizontalHeader().setSortIndicatorShown(True)
         self.song_table.horizontalHeader().sectionClicked.connect(self.sort_table)
         self.song_table.itemDoubleClicked.connect(self.play_selected_song)
@@ -146,10 +170,8 @@ class MP3Player(QMainWindow):
         self.song_table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
         self.song_table.clicked.connect(self.on_cell_clicked)
         self.song_table.verticalHeader().setVisible(False)
-        
-        # Hide the path column
         self.song_table.setColumnHidden(3, True)
-        
+
         layout.addWidget(self.song_table)
 
         # Spectrum Analyzer
@@ -223,6 +245,50 @@ class MP3Player(QMainWindow):
             self.spectrum_analyzer.setVisible(True)
             self.toggle_spectrum_button.setText("Hide Spectrum Analyzer")
 
+    def add_files_to_playlist(self, file_paths):
+        """Add new files to the playlist"""
+        new_songs = []
+
+        for file_path in file_paths:
+            ext = os.path.splitext(file_path)[1].lower()
+            if ext in self.supported_formats:
+                try:
+                    filename = os.path.basename(file_path)
+                    audio = self.supported_formats[ext](file_path)
+
+                    # Extract metadata
+                    title = filename
+                    track = 0
+
+                    if ext == '.mp3':
+                        # Handle MP3 tags
+                        if hasattr(audio, 'tags') and audio.tags:
+                            title = str(audio.tags.get('TIT2', filename))
+                            track_num = audio.tags.get('TRCK', (0,))
+                            if isinstance(track_num, tuple):
+                                track_num = track_num[0]
+                            track = int(str(track_num).split('/')[0]) if track_num else 0
+                    else:
+                        # Handle other formats
+                        title = audio.get('title', [filename])[0] if 'title' in audio else filename
+                        track = int(audio.get('tracknumber', [0])[0]) if 'tracknumber' in audio else 0
+
+                    song_data = {
+                        'filename': filename,
+                        'title': title,
+                        'track': track,
+                        'path': file_path
+                    }
+                    new_songs.append(song_data)
+
+                except Exception as e:
+                    print(f"Error loading file {file_path}: {e}")
+
+        # Add new songs to the existing playlist
+        if new_songs:
+            self.songs.extend(new_songs)
+            self.update_table_display()  # No need to pass new_songs
+
     def shuffle_playlist(self):
         if self.song_table.rowCount() == 0:
             return
@@ -295,78 +361,67 @@ class MP3Player(QMainWindow):
             json.dump(self.config, file)
 
     def load_songs(self):
+        """Modified to use supported_formats from class attribute"""
         self.songs = []
         self.song_table.setRowCount(0)
 
-        supported_formats = {
-            '.mp3': MP3,
-            '.flac': FLAC,
-            '.aac': AAC,
-            '.m4a': AAC,
-            '.ogg': OggFileType,
-            '.opus': OggFileType,
-            '.aiff': AIFF,
-        }
-
         for root, dirs, files in os.walk(self.config["folder"]):
-            for file in files:
-                ext = os.path.splitext(file)[1].lower()
-                if ext in supported_formats:
-                    full_path = os.path.join(root, file)
-                    try:
-                        audio = supported_formats[ext](full_path)
-                        title = audio.get('TIT2', file)
-                        track_num = audio.get('TRCK', (0,))
-                        if isinstance(track_num, tuple):
-                            track_num = track_num[0]
-                        track = int(str(track_num).split('/')[0]) if track_num else 0
-                        song_data = {
-                            'filename': file,
-                            'title': str(title),
-                            'track': track,
-                            'path': full_path  # Store full path
-                        }
-                        self.songs.append(song_data)
-                    except Exception as e:
-                        print(f"Error loading tags for {file}: {e}")
-                        self.songs.append({
-                            'filename': file,
-                            'title': file,
-                            'track': 0,
-                            'path': full_path
-                        })
-
-        # Sort songs and populate table
-        self.songs.sort(key=lambda x: (x['track'], x['filename']))
-        self.update_table_display()
-
+            file_paths = [os.path.join(root, file) for file in files 
+                         if os.path.splitext(file)[1].lower() in self.supported_formats]
+            self.add_files_to_playlist(file_paths)
 
     def update_table_display(self):
+        """Update the table with the current playlist"""
+        current_path = self.get_current_track_path()
+
+        # Sort songs by track number and filename
+        self.songs.sort(key=lambda x: (x['track'], x['filename']))
+
+        # Clear and repopulate table
         self.song_table.setRowCount(0)
         for song in self.songs:
             row = self.song_table.rowCount()
             self.song_table.insertRow(row)
-            self.song_table.setItem(row, 0, QTableWidgetItem(f"{song['track']:02d}"))
-            self.song_table.setItem(row, 1, QTableWidgetItem(song['title']))
-            self.song_table.setItem(row, 2, QTableWidgetItem(song['filename']))
-            self.song_table.setItem(row, 3, QTableWidgetItem(song['path']))
-        
-        # Hide the path column as it's just for internal use
-        self.song_table.setColumnHidden(3, True)
-        
+
+            # Create non-editable QTableWidgetItems
+            track_item = QTableWidgetItem(f"{song['track']:02d}")
+            track_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)  # Set to non-editable
+
+            title_item = QTableWidgetItem(song['title'])
+            title_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
+
+            filename_item = QTableWidgetItem(song['filename'])
+            filename_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
+
+            path_item = QTableWidgetItem(song['path'])
+            path_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
+
+            # Add the items to the corresponding row and column
+            self.song_table.setItem(row, 0, track_item)
+            self.song_table.setItem(row, 1, title_item)
+            self.song_table.setItem(row, 2, filename_item)
+            self.song_table.setItem(row, 3, path_item)
+
+        # Restore current playing track selection if applicable
+        if current_path:
+            new_index = self.find_track_index(current_path)
+            if new_index != -1:
+                self.current_index = new_index
+                self.song_table.selectRow(new_index)
+    
     def sort_table(self, column):
-        if self.current_sort_column == column:
-            self.current_sort_order = Qt.SortOrder.DescendingOrder if self.current_sort_order == Qt.SortOrder.AscendingOrder else Qt.SortOrder.AscendingOrder
-        else:
-            self.current_sort_column = column
-            self.current_sort_order = Qt.SortOrder.AscendingOrder
-        
-        self.song_table.sortItems(column, self.current_sort_order)
-        
-        # Update current track index to match new order if a song is playing
-        if self.current_index != -1:
-            current_path = self.get_current_track_path()
-            self.current_index = self.find_track_index(current_path)
+            if self.current_sort_column == column:
+                self.current_sort_order = Qt.SortOrder.DescendingOrder if self.current_sort_order == Qt.SortOrder.AscendingOrder else Qt.SortOrder.AscendingOrder
+            else:
+                self.current_sort_column = column
+                self.current_sort_order = Qt.SortOrder.AscendingOrder
+
+            self.song_table.sortItems(column, self.current_sort_order)
+
+            # Update current track index to match new order if a song is playing
+            if self.current_index != -1:
+                current_path = self.get_current_track_path()
+                self.current_index = self.find_track_index(current_path)
             
     def play_selected_song(self, item):
         self.current_index = self.song_list.row(item)
