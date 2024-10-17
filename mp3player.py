@@ -1,11 +1,19 @@
+import pygame
+import pyaudio
+import struct
+import os
+import random  # Import for shuffling the playlist
 import sys
 import json
 import numpy as np
-from PyQt6.QtWidgets import (QApplication, QMainWindow, QVBoxLayout, QHBoxLayout, 
-                             QWidget, QPushButton, QListWidget, QFileDialog, 
-                             QSlider, QLabel, QStyle)
-from PyQt6.QtCore import Qt, QTimer
-from PyQt6.QtGui import QIcon
+from PyQt6.QtGui import QDragEnterEvent, QDropEvent, QIcon, QStandardItem, QStandardItemModel
+from PyQt6.QtWidgets import (QDialog, QHeaderView, QTableWidgetItem, QTableWidget, QApplication, QMainWindow, QVBoxLayout, QHBoxLayout, 
+                             QWidget, QPushButton, QListWidget, QFileDialog, QSlider, QLabel, QStyle, QTreeView, QProgressBar)
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QThread, pyqtSlot
+
+from matplotlib.figure import Figure
+from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
+
 from mutagen.mp3 import MP3
 from mutagen.flac import FLAC
 from mutagen.aac import AAC
@@ -13,20 +21,146 @@ from mutagen.oggvorbis import OggVorbis
 from mutagen.ogg import OggFileType  # Use OggFileType for both Ogg Vorbis and Opus
 from mutagen.aiff import AIFF
 from mutagen.id3 import ID3
-import pygame
-import pyaudio
-import struct
-from matplotlib.figure import Figure
-from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
-import os
-from PyQt6.QtWidgets import (QTableWidget, QTableWidgetItem, QHeaderView)
-from PyQt6.QtGui import QDragEnterEvent, QDropEvent
-import random  # Import for shuffling the playlist
 
 CHUNK = 1024
 FORMAT = pyaudio.paInt16
 CHANNELS = 1
 RATE = 44100
+
+class DirectoryLoader(QThread):
+    itemLoaded = pyqtSignal(object, str)
+    progressUpdated = pyqtSignal(int)
+    finished = pyqtSignal()
+
+    def __init__(self, path):
+        super().__init__()
+        self.path = path
+
+    def run(self):
+        try:
+            items = os.listdir(self.path)
+            for i, name in enumerate(items):
+                full_path = os.path.join(self.path, name)
+                if os.path.isdir(full_path):
+                    self.itemLoaded.emit(self.path, name)
+                self.progressUpdated.emit(int((i + 1) / len(items) * 100))
+        except Exception as e:
+            print(f"Error loading directory {self.path}: {e}")
+        finally:
+            self.finished.emit()
+
+class DirectorySelector(QDialog):
+    directorySelected = pyqtSignal(str)
+
+    def __init__(self, root_path, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Select Directory")
+        self.setGeometry(100, 100, 400, 400)  # Increased height to accommodate status area
+
+        layout = QVBoxLayout()
+
+        self.tree_view = QTreeView()
+        self.model = QStandardItemModel()
+        self.tree_view.setModel(self.model)
+        self.tree_view.setHeaderHidden(True)
+        self.tree_view.setEditTriggers(QTreeView.EditTrigger.NoEditTriggers)
+        self.tree_view.expanded.connect(self.on_item_expanded)
+        self.tree_view.doubleClicked.connect(self.on_double_click)
+
+        layout.addWidget(self.tree_view)
+
+        # Add button
+        self.add_button = QPushButton("Add Selected")
+        self.add_button.clicked.connect(self.on_add_clicked)
+        layout.addWidget(self.add_button)
+
+        # Status area
+        status_area = QWidget()
+        status_layout = QVBoxLayout(status_area)
+        
+        self.status_label = QLabel("Ready")
+        status_layout.addWidget(self.status_label)
+
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setRange(0, 100)
+        self.progress_bar.setValue(0)
+        status_layout.addWidget(self.progress_bar)
+
+        layout.addWidget(status_area)
+
+        self.setLayout(layout)
+
+        self.root_path = root_path
+        self.populate_root()
+
+    def populate_root(self):
+        root_item = QStandardItem(self.root_path)
+        root_item.setData(self.root_path, Qt.ItemDataRole.UserRole)
+        root_item.setEditable(False)
+        self.model.appendRow(root_item)
+        self.add_placeholder(root_item)
+
+    def add_placeholder(self, parent):
+        placeholder = QStandardItem("Loading...")
+        placeholder.setEditable(False)
+        parent.appendRow(placeholder)
+
+    def on_item_expanded(self, index):
+        item = self.model.itemFromIndex(index)
+        if item.rowCount() == 1 and item.child(0).text() == "Loading...":
+            path = item.data(Qt.ItemDataRole.UserRole)
+            self.load_directory(item, path)
+
+    def load_directory(self, parent_item, path):
+        self.status_label.setText(f"Loading {path}...")
+        self.progress_bar.setValue(0)
+
+        self.loader = DirectoryLoader(path)
+        self.loader.itemLoaded.connect(self.on_item_loaded)
+        self.loader.progressUpdated.connect(self.update_progress)
+        self.loader.finished.connect(self.on_loading_finished)
+        self.loader.start()
+
+        parent_item.removeRow(0)  # Remove placeholder
+
+    @pyqtSlot(object, str)
+    def on_item_loaded(self, parent_path, name):
+        parent_item = self.find_item(parent_path)
+        if parent_item:
+            full_path = os.path.join(parent_path, name)
+            child_item = QStandardItem(name)
+            child_item.setData(full_path, Qt.ItemDataRole.UserRole)
+            child_item.setEditable(False)
+            parent_item.appendRow(child_item)
+            self.add_placeholder(child_item)
+
+    @pyqtSlot(int)
+    def update_progress(self, value):
+        self.progress_bar.setValue(value)
+
+    @pyqtSlot()
+    def on_loading_finished(self):
+        self.status_label.setText("Ready")
+        self.progress_bar.setValue(100)
+
+    def find_item(self, path):
+        for row in range(self.model.rowCount()):
+            item = self.model.item(row)
+            if item.data(Qt.ItemDataRole.UserRole) == path:
+                return item
+        return None
+
+    def on_double_click(self, index):
+        item = self.model.itemFromIndex(index)
+        path = item.data(Qt.ItemDataRole.UserRole)
+        self.directorySelected.emit(path)
+
+    def on_add_clicked(self):
+        indexes = self.tree_view.selectedIndexes()
+        for index in indexes:
+            item = self.model.itemFromIndex(index)
+            path = item.data(Qt.ItemDataRole.UserRole)
+            self.directorySelected.emit(path)
 
 class DragDropTable(QTableWidget):
     def __init__(self, parent=None):
@@ -230,11 +364,31 @@ class MP3Player(QMainWindow):
         layout.addLayout(control_layout)
 
         # Folder selection button
-        self.select_folder_button = QPushButton("Select Folder")
-        self.select_folder_button.clicked.connect(self.select_folder)
-        layout.addWidget(self.select_folder_button)
+        # self.select_folder_button = QPushButton("Select Folder")
+        # self.select_folder_button.clicked.connect(self.select_folder)
+        # layout.addWidget(self.select_folder_button)
+        
+        # Replace the "Select Folder" button with "Browse Directories"
+        self.browse_button = QPushButton("Browse Directories")
+        self.browse_button.clicked.connect(self.browse_directories)
+        layout.addWidget(self.browse_button)
 
         central_widget.setLayout(layout)
+
+    def browse_directories(self):
+        root_folder = QFileDialog.getExistingDirectory(self, "Select Root Directory")
+        if root_folder:
+            selector = DirectorySelector(root_folder, self)
+            selector.directorySelected.connect(self.add_directory_to_playlist)
+            selector.exec()
+
+    def add_directory_to_playlist(self, directory):
+        file_paths = []
+        for root, dirs, files in os.walk(directory):
+            for file in files:
+                if os.path.splitext(file)[1].lower() in self.supported_formats:
+                    file_paths.append(os.path.join(root, file))
+        self.add_files_to_playlist(file_paths)
 
     def toggle_spectrum_analyzer(self):
         """Toggle the visibility of the spectrum analyzer."""
