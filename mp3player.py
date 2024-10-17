@@ -361,6 +361,9 @@ class MP3Player(QMainWindow):
         self.next_button.clicked.connect(self.next_song)
         control_layout.addWidget(self.next_button)
 
+        # Add key press event to the song_table
+        self.song_table.keyPressEvent = self.table_key_press_event
+
         layout.addLayout(control_layout)
 
         # Folder selection button
@@ -374,6 +377,34 @@ class MP3Player(QMainWindow):
         layout.addWidget(self.browse_button)
 
         central_widget.setLayout(layout)
+
+    def table_key_press_event(self, event):
+        if event.key() == Qt.Key.Key_Delete:
+            self.delete_selected_songs()
+        else:
+            super(QTableWidget, self.song_table).keyPressEvent(event)
+
+    def delete_selected_songs(self):
+        selected_rows = sorted(set(index.row() for index in self.song_table.selectedIndexes()), reverse=True)
+        if not selected_rows:
+            return
+
+        for row in selected_rows:
+            self.song_table.removeRow(row)
+            if row < len(self.songs):
+                del self.songs[row]
+
+        # Update current_index if necessary
+        if self.current_index in selected_rows:
+            if self.song_table.rowCount() > 0:
+                self.current_index = 0
+            else:
+                self.current_index = -1
+                self.current_song = None
+                self.stop()
+
+        # Update the display
+        self.update_table_display()
 
     def browse_directories(self):
         root_folder = QFileDialog.getExistingDirectory(self, "Select Root Directory")
@@ -539,7 +570,7 @@ class MP3Player(QMainWindow):
 
             # Create non-editable QTableWidgetItems
             track_item = QTableWidgetItem(f"{song['track']:02d}")
-            track_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)  # Set to non-editable
+            track_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
 
             title_item = QTableWidgetItem(song['title'])
             title_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
