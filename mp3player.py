@@ -8,7 +8,7 @@ import json
 import numpy as np
 from PyQt6.QtGui import QDragEnterEvent, QDropEvent, QIcon, QStandardItem, QStandardItemModel
 from PyQt6.QtWidgets import (QDialog, QHeaderView, QTableWidgetItem, QTableWidget, QApplication, QMainWindow, QVBoxLayout, QHBoxLayout, 
-                             QWidget, QPushButton, QListWidget, QFileDialog, QSlider, QLabel, QStyle, QTreeView, QProgressBar)
+                             QWidget, QPushButton, QListWidget, QFileDialog, QSlider, QLabel, QStyle, QTreeView, QProgressBar, QSplitter)
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QThread, pyqtSlot
 
 from matplotlib.figure import Figure
@@ -99,11 +99,6 @@ class DirectorySelector(QDialog):
         root_item.setEditable(False)
         self.model.appendRow(root_item)
         self.add_placeholder(root_item)
-
-    def add_placeholder(self, parent):
-        placeholder = QStandardItem("Loading...")
-        placeholder.setEditable(False)
-        parent.appendRow(placeholder)
 
     def on_item_expanded(self, index):
         item = self.model.itemFromIndex(index)
@@ -281,16 +276,20 @@ class MP3Player(QMainWindow):
         self.end_timer.start(500)  # Check every 500ms
 
     def init_ui(self):
+        # Create main widget and layout
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
-        layout = QVBoxLayout()
-
-        # Replace QTableWidget with DragDropTable
-        self.song_table = DragDropTable(self)  # Pass self as parent
+        main_layout = QHBoxLayout()  # Changed to horizontal layout
+        
+        # Create left pane for player controls
+        left_pane = QWidget()
+        player_layout = QVBoxLayout()
+        
+        # Add existing player controls to left pane
+        self.song_table = DragDropTable(self)
         self.song_table.setColumnCount(4)
         self.song_table.setHorizontalHeaderLabels(['Track', 'Title', 'Filename', 'Path'])
 
-        # Set resize modes for each column
         header = self.song_table.horizontalHeader()
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
@@ -306,46 +305,35 @@ class MP3Player(QMainWindow):
         self.song_table.verticalHeader().setVisible(False)
         self.song_table.setColumnHidden(3, True)
 
-        layout.addWidget(self.song_table)
+        player_layout.addWidget(self.song_table)
 
-        # Spectrum Analyzer
         self.spectrum_analyzer = SpectrumAnalyzer()
-        layout.addWidget(self.spectrum_analyzer)
+        player_layout.addWidget(self.spectrum_analyzer)
 
-        # Create a horizontal layout for the toggle and shuffle buttons
         button_layout = QHBoxLayout()
-
-        # Add the toggle button for spectrum analyzer
         self.toggle_spectrum_button = QPushButton("Hide Spectrum Analyzer")
         self.toggle_spectrum_button.clicked.connect(self.toggle_spectrum_analyzer)
         button_layout.addWidget(self.toggle_spectrum_button)
 
-        # Add the shuffle playlist button
         self.shuffle_button = QPushButton("Shuffle Playlist")
         self.shuffle_button.clicked.connect(self.shuffle_playlist)
         button_layout.addWidget(self.shuffle_button)
+        player_layout.addLayout(button_layout)
 
-        # Add the button layout to the main layout
-        layout.addLayout(button_layout)
-
-        # Playback position slider
         self.position_slider = QSlider(Qt.Orientation.Horizontal)
         self.position_slider.setRange(0, 100)
         self.position_slider.sliderReleased.connect(self.seek_position)
-        layout.addWidget(self.position_slider)
+        player_layout.addWidget(self.position_slider)
 
-        # Time labels
         time_layout = QHBoxLayout()
         self.current_time_label = QLabel("0:00")
         self.total_time_label = QLabel("0:00")
         time_layout.addWidget(self.current_time_label)
         time_layout.addStretch()
         time_layout.addWidget(self.total_time_label)
-        layout.addLayout(time_layout)
+        player_layout.addLayout(time_layout)
 
-        # Playback control buttons
         control_layout = QHBoxLayout()
-        
         self.previous_button = QPushButton()
         self.previous_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaSkipBackward))
         self.previous_button.clicked.connect(self.previous_song)
@@ -360,24 +348,192 @@ class MP3Player(QMainWindow):
         self.next_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaSkipForward))
         self.next_button.clicked.connect(self.next_song)
         control_layout.addWidget(self.next_button)
+        player_layout.addLayout(control_layout)
 
-        # Add key press event to the song_table
-        self.song_table.keyPressEvent = self.table_key_press_event
-
-        layout.addLayout(control_layout)
-
-        # Folder selection button
-        # self.select_folder_button = QPushButton("Select Folder")
-        # self.select_folder_button.clicked.connect(self.select_folder)
-        # layout.addWidget(self.select_folder_button)
+        left_pane.setLayout(player_layout)
         
-        # Replace the "Select Folder" button with "Browse Directories"
-        self.browse_button = QPushButton("Browse Directories")
-        self.browse_button.clicked.connect(self.browse_directories)
-        layout.addWidget(self.browse_button)
+        # Create right pane for directory browser
+        right_pane = QWidget()
+        browser_layout = QVBoxLayout()
+        
+        # Add directory tree
+        self.tree_view = QTreeView()
+        self.tree_model = QStandardItemModel()
+        self.tree_view.setModel(self.tree_model)
+        self.tree_view.setHeaderHidden(True)
+        self.tree_view.setEditTriggers(QTreeView.EditTrigger.NoEditTriggers)
+        self.tree_view.expanded.connect(self.on_item_expanded)
+        self.tree_view.doubleClicked.connect(self.on_directory_selected)
+        
+        # Add status area
+        self.status_label = QLabel("Ready")
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setRange(0, 100)
+        self.progress_bar.setValue(0)
+        
+        # Add components to browser layout
+        browser_layout.addWidget(QLabel("Directory Browser"))
+        browser_layout.addWidget(self.tree_view)
+        browser_layout.addWidget(self.status_label)
+        browser_layout.addWidget(self.progress_bar)
+        
+        # Add "Set Root" button
+        self.set_root_button = QPushButton("Set Root Directory")
+        self.set_root_button.clicked.connect(self.set_root_directory)
+        browser_layout.addWidget(self.set_root_button)
+        
+        right_pane.setLayout(browser_layout)
+        
+        # Add splitter to allow resizing between panes
+        splitter = QSplitter(Qt.Orientation.Horizontal)
+        splitter.addWidget(left_pane)
+        splitter.addWidget(right_pane)
+        
+        # Set initial splitter sizes (70% left, 30% right)
+        splitter.setSizes([700, 300])
+        
+        # Add splitter to main layout
+        main_layout.addWidget(splitter)
+        central_widget.setLayout(main_layout)
 
-        central_widget.setLayout(layout)
+    def add_placeholder(self, parent):
+        placeholder = QStandardItem("Loading...")
+        placeholder.setEditable(False)
+        parent.appendRow(placeholder)
+        
+    def on_item_expanded(self, index):
+        """
+        Handle directory tree expansion, loading subdirectories on demand.
+        Called when a tree item is expanded by the user.
+        """
+        item = self.tree_model.itemFromIndex(index)
+        
+        # Check if this item has only a placeholder
+        if (item.rowCount() == 1 and 
+            item.child(0).text() == "Loading..."):
+            
+            # Get the full path from the item's data
+            path = item.data(Qt.ItemDataRole.UserRole)
+            if not path:
+                return
+                
+            # Remove placeholder
+            item.removeRow(0)
+            
+            try:
+                # Update status
+                self.status_label.setText(f"Loading {path}...")
+                self.progress_bar.setValue(0)
+                
+                # Get directory contents
+                entries = os.listdir(path)
+                directories = []
+                
+                # Filter for directories and supported audio files
+                for entry in entries:
+                    full_path = os.path.join(path, entry)
+                    try:
+                        if os.path.isdir(full_path):
+                            directories.append((entry, full_path))
+                        elif os.path.isfile(full_path):
+                            # Only show audio files
+                            ext = os.path.splitext(entry)[1].lower()
+                            if ext in self.supported_formats:
+                                # Create item for audio file
+                                file_item = QStandardItem(entry)
+                                file_item.setData(full_path, Qt.ItemDataRole.UserRole)
+                                file_item.setEditable(False)
+                                # Optional: Set a different icon for audio files
+                                # file_item.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaPlay))
+                                item.appendRow(file_item)
+                    except (PermissionError, OSError) as e:
+                        print(f"Error accessing {full_path}: {e}")
+                        continue
+                
+                # Sort directories alphabetically
+                directories.sort(key=lambda x: x[0].lower())
+                
+                # Add directory items
+                total_dirs = len(directories)
+                for idx, (dir_name, dir_path) in enumerate(directories):
+                    dir_item = QStandardItem(dir_name)
+                    dir_item.setData(dir_path, Qt.ItemDataRole.UserRole)
+                    dir_item.setEditable(False)
+                    
+                    # Optional: Set folder icon
+                    # dir_item.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_DirIcon))
+                    
+                    # Add placeholder for expandable directories
+                    try:
+                        # Check if directory has any valid contents
+                        has_content = False
+                        for entry in os.listdir(dir_path):
+                            entry_path = os.path.join(dir_path, entry)
+                            if os.path.isdir(entry_path):
+                                has_content = True
+                                break
+                            elif os.path.isfile(entry_path):
+                                ext = os.path.splitext(entry)[1].lower()
+                                if ext in self.supported_formats:
+                                    has_content = True
+                                    break
+                        
+                        if has_content:
+                            self.add_placeholder(dir_item)
+                    except (PermissionError, OSError):
+                        # Skip adding placeholder if we can't access the directory
+                        pass
+                    
+                    item.appendRow(dir_item)
+                    
+                    # Update progress
+                    progress = int((idx + 1) / total_dirs * 100)
+                    self.progress_bar.setValue(progress)
+                
+                # If no items were added, show an indicator
+                if item.rowCount() == 0:
+                    empty_item = QStandardItem("(Empty)")
+                    empty_item.setEditable(False)
+                    item.appendRow(empty_item)
+                
+                # Update status
+                self.status_label.setText("Ready")
+                self.progress_bar.setValue(100)
+                
+            except PermissionError:
+                self.status_label.setText("Access denied")
+                error_item = QStandardItem("(Access Denied)")
+                error_item.setEditable(False)
+                item.appendRow(error_item)
+                
+            except Exception as e:
+                self.status_label.setText("Error loading directory")
+                print(f"Error loading directory {path}: {e}")
+                error_item = QStandardItem("(Error)")
+                error_item.setEditable(False)
+                item.appendRow(error_item)
+                
+            finally:
+                # Ensure progress bar is reset even if an error occurred
+                self.progress_bar.setValue(100)
+                
+    def set_root_directory(self):
+        """Handle setting new root directory"""
+        root_folder = QFileDialog.getExistingDirectory(self, "Select Root Directory")
+        if root_folder:
+            self.tree_model.clear()
+            root_item = QStandardItem(root_folder)
+            root_item.setData(root_folder, Qt.ItemDataRole.UserRole)
+            self.tree_model.appendRow(root_item)
+            self.add_placeholder(root_item)
 
+    def on_directory_selected(self, index):
+        """Handle directory selection from tree view"""
+        item = self.tree_model.itemFromIndex(index)
+        path = item.data(Qt.ItemDataRole.UserRole)
+        if path:
+            self.add_directory_to_playlist(path)
+        
     def table_key_press_event(self, event):
         if event.key() == Qt.Key.Key_Delete:
             self.delete_selected_songs()
